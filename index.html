@@ -62,6 +62,43 @@
     .secondary { font-size: 1.85rem; font-weight: 750; color: #f4f6fb; }
     .footnote { color: #8f9daa; font-size: .76rem; line-height: 1.55; margin: 19px 5px 0; }
     .footnote strong { color: #c2d0da; font-weight: 650; }
+    .calibration {
+      background: #161e29; border: 1px solid #344253; border-radius: 17px;
+      margin-top: 18px; overflow: hidden;
+    }
+    .calibration summary {
+      list-style: none; cursor: pointer; padding: 17px 19px;
+      font-weight: 700; font-size: .92rem; color: #d7e8e5;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .calibration summary::-webkit-details-marker { display: none; }
+    .calibration summary::after {
+      content: "+"; color: #7af0cb; font-size: 1.45rem; font-weight: 400; line-height: 1;
+    }
+    .calibration[open] summary::after { content: "−"; }
+    .calibration-inner { padding: 0 19px 20px; }
+    .calibration p { color: #aebccb; font-size: .86rem; line-height: 1.5; margin: 0 0 18px; }
+    .quote {
+      background: #202d39; border: 1px solid #3b5060; border-radius: 12px;
+      padding: 12px 14px; margin-bottom: 17px; display: flex;
+      justify-content: space-between; gap: 8px; align-items: center;
+    }
+    .quote span { color: #acbecb; font-size: .85rem; }
+    .quote strong { color: #e5f3f4; font-size: 1.1rem; font-variant-numeric: tabular-nums; }
+    .calibration input { min-height: 60px; font-size: 1.45rem; }
+    .actions { margin-top: 14px; display: flex; flex-wrap: wrap; gap: 10px; }
+    button {
+      font: inherit; border: none; border-radius: 12px; cursor: pointer;
+      min-height: 47px; padding: 11px 15px; font-weight: 750;
+    }
+    .save { background: #79e9c5; color: #11241e; flex: 1; }
+    .save:focus-visible, .reset:focus-visible, summary:focus-visible {
+      outline: 3px solid #89f4d7; outline-offset: 3px;
+    }
+    .reset { background: transparent; color: #c1cfda; border: 1px solid #526071; }
+    .message { margin: 13px 0 0 !important; min-height: 18px; font-size: .8rem !important; }
+    .message[data-error="true"] { color: #ffaeae; }
+    .message[data-error="false"] { color: #91eacb; }
     @media (max-width: 370px) { .panel { padding: 18px; } .primary { font-size: 2rem; } }
     @media (prefers-reduced-motion: reduce) { input { transition: none; } }
   </style>
@@ -94,10 +131,35 @@
       </div>
     </section>
 
+    <details class="calibration">
+      <summary>Calibrar taxa com simulação</summary>
+      <div class="calibration-inner">
+        <p>Simule no PicPay um Pix por cartão de <strong>R$ 1.000,00</strong>, sem concluir a operação. Informe o total que o PicPay mostrar, já com a taxa.</p>
+        <div class="quote">
+          <span>Valor simulado</span>
+          <strong>R$ 1.000,00</strong>
+        </div>
+        <form id="calibration-form" novalidate>
+          <label for="total-cobrado">Total cobrado pelo PicPay</label>
+          <div class="input-wrap">
+            <span class="prefix" aria-hidden="true">R$</span>
+            <input id="total-cobrado" type="text" inputmode="decimal" enterkeyhint="done"
+                   placeholder="1.054,92" autocomplete="off" spellcheck="false"
+                   aria-describedby="calibration-message">
+          </div>
+          <div class="actions">
+            <button class="save" type="submit">Atualizar taxa</button>
+            <button class="reset" id="reset-calibration" type="button">Restaurar</button>
+          </div>
+          <p class="message" id="calibration-message" role="status" aria-live="polite"></p>
+        </form>
+      </div>
+    </details>
+
     <p class="footnote" id="nota">
-      <strong>Referência:</strong> R$ 1.000,00 enviados custam R$ 1.054,92
-      (taxa efetiva de 5,492%). Estimativa proporcional: a taxa real do PicPay
-      pode variar; confirme o total antes de concluir o Pix.
+      <strong>Referência atual:</strong> <span id="referencia">R$ 1.000,00 → R$ 1.054,92 (5,492%)</span>.
+      Estimativa proporcional baseada em uma única simulação. A taxa real pode
+      variar com o valor e as condições do PicPay; confirme o total antes do Pix.
     </p>
   </main>
 
@@ -105,11 +167,18 @@
     "use strict";
     // Exemplo fornecido: R$ 54,92 sobre R$ 1.000,00 = 5,492%.
     // Trabalhar em centavos evita o acúmulo de erros de ponto flutuante.
-    const TAXA_NUM = 5492;
-    const TAXA_DEN = 100000;
+    const VALOR_SIMULADO_CENTAVOS = 100000;
+    const TAXA_PADRAO_CENTAVOS = 5492;
+    const STORAGE_KEY = "calc-taxa-picpay:total-cobrado-1000:v1";
+    let taxaEm1000Centavos = TAXA_PADRAO_CENTAVOS;
     const saldoInput = document.getElementById("saldo");
     const enviarOutput = document.getElementById("enviar");
     const taxaOutput = document.getElementById("taxa");
+    const formCalibracao = document.getElementById("calibration-form");
+    const totalCobradoInput = document.getElementById("total-cobrado");
+    const referencia = document.getElementById("referencia");
+    const mensagemCalibracao = document.getElementById("calibration-message");
+    const botaoRestaurar = document.getElementById("reset-calibration");
     const brl = new Intl.NumberFormat("pt-BR", {
       style: "currency", currency: "BRL"
     });
@@ -142,11 +211,11 @@
       let minimo = 0, maximo = saldoEmCentavos;
       while (minimo < maximo) {
         const meio = Math.floor((minimo + maximo + 1) / 2);
-        const tarifa = Math.round(meio * TAXA_NUM / TAXA_DEN);
+        const tarifa = Math.round(meio * taxaEm1000Centavos / VALOR_SIMULADO_CENTAVOS);
         if (meio + tarifa <= saldoEmCentavos) minimo = meio;
         else maximo = meio - 1;
       }
-      const taxaEmCentavos = Math.round(minimo * TAXA_NUM / TAXA_DEN);
+      const taxaEmCentavos = Math.round(minimo * taxaEm1000Centavos / VALOR_SIMULADO_CENTAVOS);
       return { enviar: minimo, taxa: taxaEmCentavos };
     }
 
@@ -162,6 +231,57 @@
       taxaOutput.textContent = brl.format(resultado.taxa / 100);
     }
 
+    function atualizarReferencia() {
+      const total = VALOR_SIMULADO_CENTAVOS + taxaEm1000Centavos;
+      const percentual = (taxaEm1000Centavos / 1000)
+        .toLocaleString("pt-BR", { maximumFractionDigits: 3 });
+      referencia.textContent = "R$ 1.000,00 → " +
+        brl.format(total / 100) + " (" + percentual + "%)";
+    }
+
+    function mostrarMensagem(mensagem, erro) {
+      mensagemCalibracao.textContent = mensagem;
+      mensagemCalibracao.dataset.error = String(erro);
+    }
+
+    function carregarCalibracao() {
+      try {
+        const salvo = localStorage.getItem(STORAGE_KEY);
+        if (salvo === null) return;
+        const total = Number(salvo);
+        if (!Number.isSafeInteger(total) || total < VALOR_SIMULADO_CENTAVOS ||
+            total > 100000000) return;
+        taxaEm1000Centavos = total - VALOR_SIMULADO_CENTAVOS;
+      } catch (_) {
+        // Em navegadores que bloqueiam armazenamento, a sessão ainda funciona.
+      }
+    }
+
+    formCalibracao.addEventListener("submit", (evento) => {
+      evento.preventDefault();
+      const total = lerCentavos(totalCobradoInput.value);
+      if (total === null || total < VALOR_SIMULADO_CENTAVOS) {
+        mostrarMensagem("Informe o total cobrado (mínimo R$ 1.000,00).", true);
+        totalCobradoInput.focus();
+        return;
+      }
+      taxaEm1000Centavos = total - VALOR_SIMULADO_CENTAVOS;
+      try { localStorage.setItem(STORAGE_KEY, String(total)); } catch (_) {}
+      totalCobradoInput.value = brl.format(total / 100).replace("R$", "").trim();
+      atualizarReferencia();
+      atualizar();
+      mostrarMensagem("Taxa calibrada! Os resultados já foram atualizados.", false);
+    });
+
+    botaoRestaurar.addEventListener("click", () => {
+      taxaEm1000Centavos = TAXA_PADRAO_CENTAVOS;
+      totalCobradoInput.value = "";
+      try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+      atualizarReferencia();
+      atualizar();
+      mostrarMensagem("Taxa original de 5,492% restaurada.", false);
+    });
+
     saldoInput.addEventListener("input", atualizar);
     saldoInput.addEventListener("focus", () => saldoInput.select());
     saldoInput.addEventListener("blur", () => {
@@ -172,6 +292,8 @@
     saldoInput.addEventListener("keydown", (evento) => {
       if (evento.key === "Enter") saldoInput.blur();
     });
+    carregarCalibracao();
+    atualizarReferencia();
     atualizar();
   </script>
 </body>
